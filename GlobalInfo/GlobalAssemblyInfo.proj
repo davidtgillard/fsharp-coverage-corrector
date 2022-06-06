@@ -1,0 +1,10 @@
+<!-- Contains properties common to all NuGet packages-->
+<Project>
+    <PropertyGroup>
+        <Version>0.1.0-alpha</Version>
+        <Authors>davidtgillard</Authors>
+        <PackageProjectUrl>https://github.com/https://github.com/davidtgillard/fsharp-coverage-corrector</PackageProjectUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryType>git</RepositoryType>
+    </PropertyGroup>
+</Project>

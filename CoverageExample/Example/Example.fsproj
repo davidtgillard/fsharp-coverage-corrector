@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>FSharpCoverageCorrector.Example</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="6.0.5" />
+  </ItemGroup>
+  
+  <!-- ignore these warnings in example code to be covered-->
+  <PropertyGroup>
+    <NoWarn>0025</NoWarn>
+    <NoWarn>0026</NoWarn>
+  </PropertyGroup>
+
+</Project>
