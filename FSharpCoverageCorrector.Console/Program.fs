@@ -8,29 +8,28 @@ open FSharpCoverageCorrector.IO.Cobertura
 open FSharpLint.Framework.ParseFile
   
 type CliArguments =
-  | [<ExactlyOnce>] Output_File of string
-  | [<ExactlyOnce>] Project_File of string
-  | [<MainCommand; ExactlyOnce; Last>] Input_File of input_file: string
+  | [<ExactlyOnce>] Coverage_File of coverage_file: string
+  | [<ExactlyOnce>] Project_File of project_file: string
+  | [<ExactlyOnce>] Output_File of output_file: string
   
   with
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Output_File _ -> "The output file, in XML format."
+            | Coverage_File _ -> "The input coverage file, in Cobertura XML format."
             | Project_File _ -> "The project (.fsproj) file."
-            | Input_File _ -> "The input file, in Cobertura XML format."
+            | Output_File _ -> "The output file, in XML format."
 
 let programName = Assembly.GetExecutingAssembly().GetName().Name
-let parser = ArgumentParser.Create<CliArguments>(programName=programName)
+  
+let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
+let parser = ArgumentParser.Create<CliArguments>(programName=programName, errorHandler = errorHandler)
 
 let printErrorAndExit message =
   eprintfn $"Error: %s{parser.PrintUsage(message)}"
   exit 1
-    
-if Environment.GetCommandLineArgs().Length = 1 then
-  printErrorAndExit "No input file argument provided."
-  
-let parseResult = parser.Parse(inputs = Environment.GetCommandLineArgs()[1..], raiseOnUsage=true)
+      
+let parseResult = parser.Parse(inputs = Environment.GetCommandLineArgs()[1..])
 
 let toolsPath = Ionide.ProjInfo.Init.init()
 let projectFilesInfo = match loadProjectFiles (parseResult.GetResult Project_File) toolsPath with
@@ -53,7 +52,7 @@ let projectFilesInfo = match loadProjectFiles (parseResult.GetResult Project_Fil
 
 let anrps = loadAstNodeRuleParamsFromProject projectFilesInfo
 
-match readPackagesFromCoberturaFile projectFilesInfo anrps (parseResult.GetResult Input_File) with
+match readPackagesFromCoberturaFile projectFilesInfo anrps (parseResult.GetResult Coverage_File) with
 | Error ex ->
   let errMsg = $"Error reading data from input file: {ex.Message}{Environment.NewLine}{ex.ToString()}{Environment.NewLine}"
   printErrorAndExit errMsg

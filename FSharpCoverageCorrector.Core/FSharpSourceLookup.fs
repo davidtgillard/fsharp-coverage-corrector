@@ -49,7 +49,7 @@ module internal FSharpSourceLookup =
                                          | SynArgPats.NamePatPairs (_, range) -> [range]
     | TypeParameter synTypar -> [synTypar.Range]
     | InterfaceImplementation synInterfaceImpl -> match synInterfaceImpl with
-                                                  | SynInterfaceImpl.SynInterfaceImpl (_, _, _, _, range) -> [range]
+                                                  | SynInterfaceImpl.SynInterfaceImpl (_, _, range) -> [range]
     | Identifier (_, range) -> [range]
     | File parsedInput -> [parsedInput.Range]
     | LambdaBody synExpr -> [synExpr.Range]

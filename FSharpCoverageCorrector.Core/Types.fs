@@ -217,8 +217,6 @@ type Class = private {
     let reduced = nonMethodLines
                   |> List.filter (fun l -> not (List.contains l methodLines))
     let allLines = methodLines @ reduced |> List.sortBy (fun l -> l.Number)
-    if allLines.IsEmpty then
-      failwith $"class {name} of file {sourceFile} contains no lines"
     {name_ = name; sourceFile_ = sourceFile; methods_ = methods; lines_ = allLines; nonMethodLines_ = reduced}
   
   /// The lines of code within the class that don't belong to any methods.

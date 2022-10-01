@@ -36,12 +36,12 @@ let private countCasesInMatchClause (clause: SynMatchClause) =
   let rec countCases (pat: SynPat) (count: int) =
       let mutable localSoFar = count + 1
       match pat with
-      | SynPat.Or (lhs, _, _, _) ->
+      | SynPat.Or (lhs, _, _) ->
           countCases lhs localSoFar
       | _ -> localSoFar
   // apply countCases to the given clause.
   match clause with 
-  | SynMatchClause(pat, _, _, _, _, _) -> countCases pat 0
+  | SynMatchClause(pat, _, _, _, _) -> countCases pat 0
 
 /// Returns the number of boolean operators in an expression.
 /// If expression is Match, MatchLambda, or MatchBang, the 'when' expressions of the match clauses are examined for boolean operators, if applicable.
@@ -67,12 +67,12 @@ let private countBooleanOperators expression =
     else
       count
   // in match and match-like expressions, consider the when expressions of any clauses
-  | SynExpr.MatchBang(_, _, _, _, clauses, _)
-  | SynExpr.MatchLambda(_, _, clauses, _, _) 
-  | SynExpr.Match(_, _, _, _, clauses, _) ->
+  | SynExpr.MatchBang(_, _, clauses, _)
+  | SynExpr.MatchLambda(_, _, clauses, _, _)
+  | SynExpr.Match(_, _, clauses, _) ->
     clauses |> List.sumBy (fun c -> 
                                     match c with
-                                    | SynMatchClause(_, whenExprOpt, _, _, _, _) ->
+                                    | SynMatchClause(_, whenExprOpt, _, _, _) ->
                                       match whenExprOpt with
                                         | Some whenExpr ->
                                           countOperators 0 whenExpr
@@ -102,12 +102,12 @@ let calculateBranches (args: AstNodeRuleParams) =
         (countBooleanOperators condition) * 2 // include the number of boolean operators in the while condition
       | SynExpr.IfThenElse(condition, _, _, _, _, _, _) ->
         (1 + countBooleanOperators condition) * 2 // include the number of boolean operators in the condition
-      | SynExpr.MatchBang(_, _, _, _, clauses, _)
+      | SynExpr.MatchBang(_, _, clauses, _)
       | SynExpr.MatchLambda(_, _, clauses, _, _)
-      | SynExpr.Match(_, _, _, _, clauses, _) ->
+      | SynExpr.Match(_, _, clauses, _) ->
           let numCases = clauses |> List.sumBy countCasesInMatchClause // determine the number of cases in the match expression 
           numCases + (countBooleanOperators expression) * 2 // include the number of boolean operators in any when expressions, if applicable
-      | SynExpr.TryWith(_, cases, _, _, _, _) ->
+      | SynExpr.TryWith(_, _, cases, _, _, _, _) ->
           let numCases = cases |> List.sumBy countCasesInMatchClause
           numCases + (countBooleanOperators expression) * 2 // include the number of boolean operations in any case, if applicable
       | _ -> 0

@@ -1,10 +1,14 @@
 <!-- Contains properties common to all NuGet packages-->
 <Project>
     <PropertyGroup>
-        <Version>0.1.0-alpha</Version>
+        <Version>0.1.1-alpha</Version>
+        <PackageReleaseNotes>First release.</PackageReleaseNotes>
         <Authors>davidtgillard</Authors>
-        <PackageProjectUrl>https://github.com/https://github.com/davidtgillard/fsharp-coverage-corrector</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/davidtgillard/fsharp-coverage-corrector</PackageProjectUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <RepositoryType>git</RepositoryType>
+        <RepositoryUrl>https://github.com/davidtgillard/fsharp-coverage-corrector</RepositoryUrl>
+        <Copyright>Copyright David Gillard 2022</Copyright>
+        <PackageTags>coverage;cobertura;coverlet;fsharp;;quality;testing;unit-test</PackageTags>
     </PropertyGroup>
 </Project>

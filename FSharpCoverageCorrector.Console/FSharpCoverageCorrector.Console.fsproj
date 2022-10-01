@@ -5,7 +5,14 @@
         <TargetFramework>net5.0</TargetFramework>
         <ToolCommandName>dotnet-fsharp-coverage-corrector</ToolCommandName>
         <PackAsTool>true</PackAsTool>
-        <AssemblyTitle>fsharp.coverage-corrector.console</AssemblyTitle>
+        <AssemblyTitle>fsharp-coverage-corrector.console</AssemblyTitle>
+        <Description>Command-line tool for correcting F# coverage output generated with coverlet. Presently only supports cobertura format output.</Description>
+    </PropertyGroup>
+  
+    <!-- Package information -->
+    <PropertyGroup>
+      <PackageId>FsharpCoverageCorrector.Console</PackageId>
+      <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb;.xml</AllowedOutputExtensionsInPackageBuildOutputFolder>
     </PropertyGroup>
 
     <!-- Import the common assembly information-->
@@ -36,7 +43,7 @@
     </ItemGroup>
 
      <ItemGroup>
-       <PackageReference Update="FSharp.Core" Version="6.0.5" />
+       <PackageReference Update="FSharp.Core" Version="5.0.2" />
      </ItemGroup>
 
 

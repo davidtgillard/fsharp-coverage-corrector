@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net5.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <AssemblyTitle>fsharp.coverage-corrector.core</AssemblyTitle>
+    <AssemblyTitle>fsharp-coverage-corrector.core</AssemblyTitle>
   </PropertyGroup>
 
   <!-- Import the common assembly information-->
@@ -34,9 +34,9 @@
 
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.1.1" />
-    <PackageReference Include="FSharp.Compiler.Service" Version="41.0.5" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="40.0.0" />
     <PackageReference Include="FSharpLint.Core" Version="0.21.2" />
-    <PackageReference Update="FSharp.Core" Version="6.0.5" />
+    <PackageReference Update="FSharp.Core" Version="5.0.2" />
   </ItemGroup>
 
 </Project>
