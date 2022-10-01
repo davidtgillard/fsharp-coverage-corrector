@@ -3,7 +3,7 @@
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFramework>net5.0</TargetFramework>
-        <ToolCommandName>dotnet-fsharp-coverage-corrector</ToolCommandName>
+        <ToolCommandName>fsharp-coverage-corrector</ToolCommandName>
         <PackAsTool>true</PackAsTool>
         <AssemblyTitle>fsharp-coverage-corrector.console</AssemblyTitle>
         <Description>Command-line tool for correcting F# coverage output generated with coverlet. Presently only supports cobertura format output.</Description>
