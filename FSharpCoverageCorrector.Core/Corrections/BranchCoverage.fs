@@ -44,6 +44,7 @@ let private countCasesInMatchClause (clause: SynMatchClause) =
   | SynMatchClause(pat, _, _, _, _) -> countCases pat 0
 
 /// Returns the number of boolean operators in an expression.
+/// Returns the number of boolean operators in an expression.
 /// If expression is Match, MatchLambda, or MatchBang, the 'when' expressions of the match clauses are examined for boolean operators, if applicable.
 let private countBooleanOperators expression =
   /// Boolean operator functions.
@@ -130,22 +131,44 @@ let private buildBranchCoverageLineLookup (l: SourceFileLineLookup list) =
   |> List.map (fun sfll -> sfll.File, buildLineLookupToNumBranches sfll.LineLookup)
   |> Map.ofList
 
+/// Returns true if the node is a type of expression that can have cases (Match, MatchBang, MatchLambda, TryWith)
+let private hasCases node =
+   match node with
+   | AstNode.Expression expression ->
+     match expression with
+     | (SynExpr.MatchBang _ | SynExpr.MatchLambda _ | SynExpr.Match _ | SynExpr.TryWith _) -> true
+     | _ -> false
+   | _ -> false
+
 /// Resolves the number of branches in a line to match the correct number of branches.
-let private resolveBranches (line: Line) (correctedNumBranches: int) =
-  if correctedNumBranches < line.ConditionCoverage.NumConditions then
+let private resolveBranches (line: Line) (nodeBranches: NodeBranches list) =
+  let correctedNumBranches = nodeBranches |> List.sumBy (fun n -> n.NumBranches) // get the number of conditions met
+  // if there are no conditions, nothing to do
+  if line.Conditions.Length = 0 then
+    line
+  // If there is only one nodeBranch and it of the type of expression that has cases (Match, MatchBang, MatchLambda, TryWith), we have to handle the case where an odd number of cases exist, which cannot be met with Jump statements
+  else if nodeBranches.Length = 1 && hasCases nodeBranches[0].Node.AstNode then
+    let numCases = nodeBranches[0].NumBranches // the number of cases is the number of branches
+    let numCasesCovered = line.ConditionCoverage.NumCovered // the number of cases covered is the number of covered conditions
+    // create a fake switch condition, using the ID from the first line condition
+    let switchCondition : LineCondition = { Number =  line.Conditions[0].Number 
+                                            Coverage = ConditionCoverage.Switch { NumConditions = numCases; NumCovered = min numCases numCasesCovered } }
+    { line with Conditions = [switchCondition] }
+  // otherwise, if the corrected number of branches is less than the number of conditions currently included in the line
+  else if correctedNumBranches < line.ConditionCoverage.NumConditions then
     let mutable numConditionsCounter = 0 
     // todo: this should be a bit more intelligent about fitting the selection of conditions to the expected coverage.
     // add all the jump coverages first
     // first, sort by numCovered and condition
     let conditions = line.Conditions
-                    |> List.sortBy (fun c -> let icc = c :> IConditionCoverage
-                                             icc.NumCovered, icc.NumConditions)
-                    |> List.takeWhile (fun c -> let icc = c :> IConditionCoverage
-                                                if numConditionsCounter <= correctedNumBranches then
-                                                  numConditionsCounter <- numConditionsCounter + icc.NumConditions
-                                                  true
-                                                else
-                                                  false)
+                     |> List.sortBy (fun c -> let icc = c :> IConditionCoverage
+                                              icc.NumCovered, icc.NumConditions)
+                     |> List.takeWhile (fun c -> let icc = c :> IConditionCoverage
+                                                 if numConditionsCounter < correctedNumBranches then
+                                                   numConditionsCounter <- numConditionsCounter + icc.NumConditions
+                                                   true
+                                                 else
+                                                   false)
     let overshot = numConditionsCounter - correctedNumBranches // the number of extra branches that aren't valid
     let updatedConditions = if overshot > 0 then
                               // get the last condition in the list, since the takeWhile above ensures that it is the last one that pushes the number of branches over
@@ -170,9 +193,7 @@ let private correctMethod (lookup: Map<int, NodeBranches list>) (method: Method)
   let lines = method.Lines
               |> List.map (fun l ->
                             match Map.tryFind l.Number lookup with
-                            | Some nodeBranches ->
-                                let correctedNumBranches = nodeBranches |> List.sumBy (fun n -> n.NumBranches)
-                                resolveBranches l correctedNumBranches
+                            | Some nodeBranches -> resolveBranches l nodeBranches
                             | None -> l)
   { method with Lines = lines }
   
