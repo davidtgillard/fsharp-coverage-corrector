@@ -6,10 +6,11 @@ open FSharpCoverageCorrector.Core
 open FSharpCoverageCorrector.Core.Corrections
 open FSharpCoverageCorrector.IO.Cobertura
 open FSharpLint.Framework.ParseFile
+open Microsoft.FSharp.Core
   
 type CliArguments =
   | [<ExactlyOnce>] Coverage_File of coverage_file: string
-  | [<ExactlyOnce>] Project_File of project_file: string
+  | [<Mandatory>] Project_File of project_file: string
   | [<ExactlyOnce>] Output_File of output_file: string
   
   with
@@ -17,7 +18,7 @@ type CliArguments =
         member s.Usage =
             match s with
             | Coverage_File _ -> "The input coverage file, in Cobertura XML format."
-            | Project_File _ -> "The project (.fsproj) file."
+            | Project_File _ -> "An project (.fsproj) file."
             | Output_File _ -> "The output file, in XML format."
 
 let programName = Assembly.GetExecutingAssembly().GetName().Name
@@ -32,23 +33,36 @@ let printErrorAndExit message =
 let parseResult = parser.Parse(inputs = Environment.GetCommandLineArgs()[1..])
 
 let toolsPath = Ionide.ProjInfo.Init.init()
-let projectFilesInfo = match loadProjectFiles (parseResult.GetResult Project_File) toolsPath with
-                        | Ok fileParseInfoList -> fileParseInfoList
-                        | Error err ->
-                          let errMsg = match err with
-                                        | ProjectLoadError.ProjectInfoError e -> $"An error occurred loading project information: {e}"
-                                        | ProjectLoadError.ParseFileError failureList ->
-                                          failureList |> List.fold (fun str failure ->
-                                                            str + Environment.NewLine +
-                                                            match failure with
-                                                            | ParseFileFailure.AbortedTypeCheck -> "Aborted type check"
-                                                            | ParseFileFailure.FailedToParseFile parseFailures ->
-                                                              parseFailures
-                                                              |> Array.map (fun f -> $"Failed to parse file ${f.FileName}: ${f.Message}")
-                                                              |> String.concat Environment.NewLine
-                                                            )
-                                                            "Error parsing source files: "
-                          printErrorAndExit errMsg
+let projectLoadResults = loadProjectFiles (parseResult.GetResults Project_File) toolsPath
+
+let fileParseInfo = projectLoadResults
+                     |> Seq.filter (fun result -> match result with | Ok _ -> true | Error _ -> false)
+                     |> Seq.map (fun result -> match result with | Ok x -> x | Error _ -> failwith "")
+                     |> Seq.concat
+                     |> Seq.toList
+                     
+let loadErrors = projectLoadResults
+                 |> Seq.filter (fun result -> match result with | Ok _ -> false | Error _ -> true)
+                 |> Seq.map (fun result -> match result with | Ok _ -> failwith "" | Error x -> x)
+                 |> Seq.toList
+
+// todo: clean this up
+if not (List.isEmpty loadErrors) then
+  for err in loadErrors do               
+     let errMsg = match err with
+                  | ProjectLoadError.ProjectInfoError e -> $"An error occurred loading project information: {e}"
+                  | ProjectLoadError.ParseFileError failureList ->
+                    failureList |> List.fold (fun str failure ->
+                                      str + Environment.NewLine +
+                                      match failure with
+                                      | ParseFileFailure.AbortedTypeCheck -> "Aborted type check"
+                                      | ParseFileFailure.FailedToParseFile parseFailures ->
+                                        parseFailures
+                                        |> Array.map (fun f -> $"Failed to parse file ${f.FileName}: ${f.Message}")
+                                        |> String.concat Environment.NewLine
+                                      )
+                                      "Error parsing source files: "
+      printErrorAndExit errMsg
 
 let anrps = loadAstNodeRuleParamsFromProject projectFilesInfo
 
