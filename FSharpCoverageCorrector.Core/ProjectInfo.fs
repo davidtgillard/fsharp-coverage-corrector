@@ -55,7 +55,7 @@ module ProjectInfo =
   /// <summary>
   ///     Attempts to load all the files related to a project.
   /// </summary>
-  /// <param name="projectFilePath">The path to the project file (.fsproj).</param>
+  /// <param name="projectFilePaths">The path to the project file (.fsproj).</param>
   /// <param name="toolsPath">The path to the Ionide tools.</param>
   /// <returns>A list of <c>FileParseInfo</c>s, if successful; otherwise a <c>ProjectLoadError</c>.</returns>
   let loadProjectFiles projectFilePaths toolsPath =
