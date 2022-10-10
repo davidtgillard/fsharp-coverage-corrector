@@ -1,6 +1,5 @@
 open System
 open System.Collections.Generic
-open System.Reflection
 open Argu
 open FSharpLint.Framework.Ast
 open FSharpCoverageCorrector.Core
@@ -22,7 +21,8 @@ type CliArguments =
             | Project_File _ -> "An project (.fsproj) file."
             | Output_File _ -> "The output file, in XML format."
 
-let programName = Assembly.GetExecutingAssembly().GetName().Name
+[<Literal>]
+let programName = "fsharp-coverage-corrector"
   
 let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
 let parser = ArgumentParser.Create<CliArguments>(programName=programName, errorHandler = errorHandler)
@@ -34,55 +34,45 @@ let printErrorAndExit message =
 let parseResult = parser.Parse(inputs = Environment.GetCommandLineArgs()[1..])
 
 let toolsPath = Ionide.ProjInfo.Init.init()
-let projectLoadResults = loadProjectFiles (parseResult.GetResults Project_File) toolsPath |> Seq.toList
- 
-// obtain the file parse information from loading the projects
-let fileParseInfo = projectLoadResults
-                     |> List.filter (fun result -> match result with | Ok _ -> true | Error _ -> false) // filter out any Errors
-                     |> List.map (fun result -> match result with | Ok x -> x | Error _ -> failwith "")// retrieve the Oks
-                     |> List.concat // cat them all
-                     
-// obtain the errors
-let loadErrors = projectLoadResults
-                 |> List.filter (fun result -> match result with | Ok _ -> false | Error _ -> true) // filter out any Oks
-                 |> List.map (fun result -> match result with | Ok _ -> failwith "" | Error x -> x) // retrieve the Errors
 
-// todo: clean this up
-if not (List.isEmpty loadErrors) then
-  let errorMessages = List<string>()
-  errorMessages.Add $"Error occurred loading project information"
-  for err in loadErrors do               
-     match err with
-     | ProjectLoadError.ProjectInfoError e -> errorMessages.Add $"\tAn error occurred loading project information: {e}"
-     | ProjectLoadError.ParseFileError failureList ->
-         let errMsg = failureList |> List.fold
-                                        (fun str failure ->
-                                           str + Environment.NewLine +
-                                           match failure with
-                                           | ParseFileFailure.AbortedTypeCheck -> "\t\tAborted type check"
-                                           | ParseFileFailure.FailedToParseFile parseFailures ->
-                                             parseFailures
-                                             |> Array.map (fun f -> $"\t\tFailed to parse file ${f.FileName}: ${f.Message}")
-                                             |> String.concat Environment.NewLine
-                                        )
-                                        "\tError parsing source files: "
-         errorMessages.Add errMsg
-     // print the final error
-     printErrorAndExit (String.Join('\n', errorMessages.ToArray()))
-// else
+// attempt to load the projects
+let projectLoadResults = match loadProjectFiles (parseResult.GetResults Project_File) toolsPath with
+                         | Ok parsedFileInfo -> parsedFileInfo
+                         | Error errors ->
+                             // build up an error message, listing all the errors
+                             let errorMessages = List<string>()
+                             errorMessages.Add $"Errors occurred loading project information:"
+                             for err in errors do               
+                                match err with
+                                | ProjectLoadError.ProjectInfoError e -> errorMessages.Add $"\t{e}"
+                                | ProjectLoadError.ParseFileError failureList ->
+                                    let errMsg = failureList |> List.fold
+                                                                    (fun str failure ->
+                                                                      str + Environment.NewLine +
+                                                                      match failure with
+                                                                      | ParseFileFailure.AbortedTypeCheck -> "\t\t- Aborted type check"
+                                                                      | ParseFileFailure.FailedToParseFile parseFailures ->
+                                                                        parseFailures
+                                                                        |> Array.map (fun f -> $"\t\t- Failed to parse file ${f.FileName}: ${f.Message}")
+                                                                        |> String.concat Environment.NewLine
+                                                                   )
+                                                                   "\t- Error parsing source files"
+                                    errorMessages.Add errMsg
+                             // print the final error
+                             printErrorAndExit (String.Join('\n', errorMessages.ToArray()))
+                           
+let anrps = loadAstNodeRuleParamsFromProject projectLoadResults
 
-let anrps = loadAstNodeRuleParamsFromProject fileParseInfo
-
-match readPackagesFromCoberturaFile fileParseInfo anrps (parseResult.GetResult Coverage_File) with
+match readCoberturaFileContents projectLoadResults anrps (parseResult.GetResult Coverage_File) with
 | Error ex ->
   let errMsg = $"Error reading data from input file: {ex.Message}{Environment.NewLine}{ex.ToString()}{Environment.NewLine}"
   printErrorAndExit errMsg
-| Ok packages ->
+| Ok coberturaFileContents ->
   // apply the corrections
-  let correctedPackages = packages
+  let correctedPackages = coberturaFileContents.Packages
                           |> List.map correctAutogeneratedClasses
                           |> List.map correctBranchCoverage
-  let xml = generateXml correctedPackages
+  let xml = generateXml {coberturaFileContents with Packages = correctedPackages}
   try
     xml.Save(parseResult.GetResult Output_File)
   with

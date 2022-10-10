@@ -7,6 +7,8 @@ open FSharpLint.Framework
 open FSharpLint.Framework.Ast
 open FSharpLint.Framework.ParseFile
 open FSharpLint.Framework.Rules
+open Ionide.ProjInfo.Types
+open FSharpCoverageCorrector.Core.Utils
 
 /// Data structures and functions for loading F# project information, including AST.
 [<AutoOpen>]
@@ -19,16 +21,26 @@ module ProjectInfo =
     /// Errors occurred parsing the project.
     | ParseFileError of ParseFileFailure list
   
-  /// loads project info
-  let private getProjectInfo (projectFilePaths: string list) (toolsPath: Ionide.ProjInfo.Types.ToolsPath) =
+  /// loads project info. returns a tuple (loadedOptions, loadErrors) where loadedOptions contains loaded project options, and loadErrors contains any load errors
+  let private getProjectInfo (projectFilePaths: string list) (toolsPath: ToolsPath) =
     // set up the loader
     let loader = Ionide.ProjInfo.WorkspaceLoader.Create toolsPath
     let notifications = ResizeArray<_>()
     loader.Notifications.Add notifications.Add
     // load the projects
     let options = loader.LoadProjects projectFilePaths
-    options
-    |> Seq.map (fun proj -> Ionide.ProjInfo.FCS.mapToFSharpProjectOptions proj options)
+    let loadedOptions = options
+                        |> Seq.map (fun proj -> Ionide.ProjInfo.FCS.mapToFSharpProjectOptions proj options)
+                        |> Seq.toList
+    let loadErrors =
+      seq {
+        for projState in notifications do
+          match projState with
+          | WorkspaceProjectState.Failed (projectFile, _) -> yield (ProjectInfoError $"An error occurred attempting to load {projectFile}")
+          | _ -> ()
+      } |> Seq.toList
+    loadedOptions, loadErrors
+    
     
   /// returns either a failed file, or none
   let private getFailedFiles = function
@@ -40,6 +52,7 @@ module ProjectInfo =
     | Success file -> Some file
     | _ -> None
   
+  /// parses the files in a project and returns them in a result, or a list of parse failures
   let private parseFilesInProject files projectOptions checker =
     // get the parsed files
     let parsedFiles = files
@@ -63,12 +76,20 @@ module ProjectInfo =
                            |> List.map Path.GetFullPath // convert to absolute paths
                            |> List.distinct // ensure that no project is attempted to be loaded twice
     let checker = FSharpChecker.Create(keepAssemblyContents=true)
-
     // try to retrieve the project info and parse the files
-    getProjectInfo projectFilePaths toolsPath
-    |> Seq.map (fun projectOptions -> match parseFilesInProject (Array.toList projectOptions.SourceFiles) projectOptions checker with
-                                       | Ok parseFileInfoList -> Ok parseFileInfoList
-                                       | Error parseFileFailures -> Error (ParseFileError parseFileFailures))
+    let loadedProjectOptions, loadErrors = getProjectInfo projectFilePaths toolsPath
+    if List.isEmpty loadErrors then
+      let success, errors = loadedProjectOptions 
+                            |> List.map (fun projectOptions -> match parseFilesInProject (Array.toList projectOptions.SourceFiles) projectOptions checker with
+                                                               | Ok parseFileInfoList -> Ok parseFileInfoList
+                                                               | Error parseFileFailures -> Error (ParseFileError parseFileFailures))
+                            |> unwrapAndPartitionResults
+      if List.isEmpty errors then
+        success |> List.concat |> Ok
+      else
+        Error errors
+    else
+      Error loadErrors
     
   /// <summary>
   ///     Given a list of parsed files, creates a map of <c>SourceFile</c>s to a list of <c>AstNodeRuleParams</c> loaded from the file.

@@ -3,15 +3,32 @@ module FSharpCoverageCorrector.IO.Cobertura
 
 open System.Linq
 open System
+open System.Text.RegularExpressions
 open System.Xml
 open System.Xml.Linq
 open FSharpCoverageCorrector.Core
 open FSharpLint.Framework.ParseFile
 open FSharpLint.Framework.Rules
+open Microsoft.FSharp.Collections
+
+/// Contents loaded from a Cobertura file
+type CoberturaContents =
+  {
+    /// The sources read from a cobertura file
+    Sources: string list
+    /// The packages read from a cobertura file
+    Packages: Package list
+    /// A lookup table of class names to the source from which they came
+    ClassesToSources: Map<string, string>
+  }
 
 /// Formats a float.
 let inline private formatFloat (flt: float) =
   Math.Round(flt, 4)
+  
+/// Merge two maps.
+let private mergeMaps m1 m2 =
+  Map.fold (fun s k v -> Map.add k v s) m1 m2
 
 /// Parses a line condition element
 let private parseConditions (node: XmlNode) (overallConditionCoverage : GenericConditionCoverage) =
@@ -84,40 +101,68 @@ let private parseMethod fileContents (node: XmlNode) =
   }
   
 /// parses a class element and associates it with the appropriate source file and AST information.
-let private parseClass (sourceFiles: SourceFile list) (node: XmlNode) =
+/// Returns a class and the name of the Cobertura source in the path of while the source file in which the class is defined belongs.
+let private parseClass (sources: string list) (sourceFiles: SourceFile list) (node: XmlNode) =
   let attributes = node.Attributes
-  let classFilename = "/" + attributes["filename"].Value // have to add root '/' to class file name, since it's not in the cobertura output
-  let sourceFile = match sourceFiles |> List.tryFind (fun sf -> sf.Filename = classFilename) with
-                   | Some x -> x
-                   | None -> failwith $"unable to find loaded source file corresponding to {classFilename}"
+  let className = attributes["name"].Value
+  let classFilename = attributes["filename"].Value
+  let sourceFileCandidates = sources
+                             |> List.map (fun src ->
+                                            let candidatePath = if src.Length = 0 || src[src.Length-1]<>'/' then
+                                                                  src + "/" + classFilename
+                                                                else src + classFilename
+                                            sourceFiles
+                                            |> List.filter (fun sf -> sf.Filename = candidatePath)
+                                            |> List.map (fun sf -> sf, src)
+                                          )
+                             |> List.concat
+  if List.isEmpty sourceFileCandidates then
+    failwith $"unable to find loaded source file corresponding to {classFilename} for class {className}"
+  else if List.length sourceFileCandidates > 1 then
+    failwith $"ambiguous choice for source files from which {classFilename} could originate: {String.Join(';', sourceFileCandidates)}"
+  // else
+  let sourceFile, source = sourceFileCandidates.Head // sourceFileCandidates guaranteed to have a single element at this point
   let methods = node.SelectSingleNode("methods").ChildNodes.Cast<XmlNode>()
               |> Seq.map (parseMethod sourceFile)
               |> Seq.toList
   let lines = node.SelectSingleNode("lines").ChildNodes.Cast<XmlNode>()
               |> Seq.map (parseLine sourceFile)
               |> Seq.toList
-  Class.Create(attributes["name"].Value,
-               sourceFile,
-               methods,
-               lines)
-
+  // return the class and the source
+  let c = Class.Create(attributes["name"].Value, sourceFile, methods, lines)
+  c, source
+  
 /// parses a package element and associates it with the appropriate source file and AST information.
-let private parsePackage (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (node: XmlNode) =
-  let classes = node.SelectSingleNode("classes").ChildNodes.Cast<XmlNode>()
-              |> Seq.map (parseClass sourceFiles)
-              |> Seq.toList
+let private parsePackage (sources : string list) (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (node: XmlNode) = 
+  let classesAndSources = node.SelectSingleNode("classes").ChildNodes.Cast<XmlNode>()
+                          |> Seq.map (parseClass sources sourceFiles)
+                          |> Seq.toList
+  let classes = classesAndSources |> List.map fst
   let classFilenames = classes |> List.map (fun c -> c.SourceFile.Filename) |> Set
   let relevantRuleParams = ruleParams
                            |> Map.filter (fun f _ -> classFilenames.Contains(f.Filename))
-  { Name=node.Attributes["name"].Value
-    Classes=classes
-    RuleParams = relevantRuleParams }
+  let classToSourceLookup = classesAndSources
+                            |> List.map (fun (c, s) -> c.Name, s)
+                            |> Map
+  let package = { Name=node.Attributes["name"].Value; Classes=classes; RuleParams = relevantRuleParams }
+  package, classToSourceLookup
 
 /// Reads F# packages from a list of source files.
-let private readPackages (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (doc: XmlDocument) =
+/// Returns a list of packages and a map from class names to their sources (sources as loaded from the Cobertura XML, not filenames).
+let private readPackages (sources: string list) (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (doc: XmlDocument) =
   let de = doc.DocumentElement
+  // read the packages
   de.SelectSingleNode("packages").ChildNodes.Cast<XmlNode>()
-  |> Seq.map (parsePackage sourceFiles ruleParams)
+  |> Seq.map (parsePackage sources sourceFiles ruleParams)
+  |> Seq.fold (fun (pkgList, classesToSourcesLookup) (pkg, m) ->
+                pkg::pkgList, mergeMaps classesToSourcesLookup m
+              )
+              (List.empty, Map.empty)
+  
+/// Reads the sources element from a cobertura XML document.
+let private readSources (doc: XmlDocument) =
+  doc.DocumentElement.SelectSingleNode("sources").ChildNodes.Cast<XmlNode>()
+  |> Seq.map (fun node -> node.InnerText)
   |> Seq.toList
 
 /// <summary>
@@ -127,15 +172,21 @@ let private readPackages (sourceFiles: SourceFile list) (ruleParams: Map<SourceF
 /// <param name="filesInfo">Parse information loaded from F# source files.</param>
 /// <param name="ruleParams">A map of source files to <c>AstNodeRuleParams</c> belong in those files.</param>
 /// <param name="filename">The XML cobertura file.</param>
-/// <returns>A <c>Result</c> type containing either a list of <c>Package</c>s, if successful, or an exception if a failure occurred. </returns>
-let readPackagesFromCoberturaFile (filesInfo: FileParseInfo list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (filename: string) =
+/// <returns>A <c>Result</c> type containing either a <c>CoberturaContents</c>, if successful, or an exception if a failure occurred.</returns>
+let readCoberturaFileContents (filesInfo: FileParseInfo list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (filename: string) =
   let sourceFiles = filesInfo |> List.map (fun fpi -> { Filename = fpi.File
                                                         RelativePath = fpi.File
                                                         Lines = fpi.Text.Split([|"\r\n"; "\n"; "\r"|], StringSplitOptions.None) })
   try
     let doc = XmlDocument()
     doc.Load(filename)
-    Ok (readPackages sourceFiles ruleParams doc)
+    let sources = readSources doc
+    let packages, classesToSourcesLookup = readPackages sources sourceFiles ruleParams doc
+    {
+      Sources = sources
+      Packages = packages
+      ClassesToSources = classesToSourcesLookup
+    } |> Ok
   with ex -> Error ex
   
 /// Serializes a LineCondition to a Cobertura Condition element.
@@ -177,10 +228,12 @@ let private serializeMethod (m: Method) =
   elem
 
 /// Serializes a Class to Cobertura Class element.
-let private serializeClass (c: Class) =
+let private serializeClass (source: string) (c: Class) =
+  let regex = Regex(Regex.Escape(source))
+  let filename = regex.Replace(c.SourceFile.Filename, "", 1)
   let elem = XElement("class",
     XAttribute("name", c.Name),
-    XAttribute("filename", c.SourceFile.Filename),
+    XAttribute("filename", filename),
     XAttribute("line-rate", c.LineCoverage |> formatFloat),
     XAttribute("branch-rate", (coverageRatio c.ConditionCoverage |> formatFloat)),
     XAttribute("complexity", c.CyclomaticComplexity))
@@ -189,24 +242,31 @@ let private serializeClass (c: Class) =
   if c.Lines.Length > 0 then
     elem.Add(XElement("lines", c.Lines |> List.map serializeLine |> List.toArray))
   elem
+  
+/// Serializes a Source to Cobertura source element.
+let private serializeSource (source: string) =
+  let elem = XElement("source")
+  elem.SetValue source
+  elem
     
-/// Serializes a Line to Cobertura Package element.
-let private serializePackage (p: Package) =
+/// Serializes a Package to Cobertura Package element.
+let private serializePackage (p: Package) (classesToSources: Map<string, string>) =
   let elem = XElement("package",
     XAttribute("name", p.Name),
     XAttribute("line-rate", p.LineCoverage |> formatFloat),
     XAttribute("branch-rate", coverageRatio p.ConditionCoverage |> formatFloat),
     XAttribute("complexity", p.CyclomaticComplexity))
   if p.Classes.Length > 0 then
-    elem.Add(XElement("classes", p.Classes |> List.map serializeClass |> List.toArray))
+    elem.Add(XElement("classes", p.Classes |> List.map (fun c -> serializeClass classesToSources[c.Name] c) |> List.toArray))
   elem
 
 /// <summary>
 /// Generates a Cobertura 'coverage' XML element containing coverage information for all the provided packages. 
 /// </summary>
-/// <param name="packages">The packages to be included in the returned element.</param>
+/// <param name="contents">The contents of the cobertura file to be included in the returned element.</param>
 /// <returns>a Cobertura 'coverage' XML element.</returns>
-let generateXml (packages: Package list) =
+let generateXml (contents: CoberturaContents) =
+  let packages = contents.Packages
   let linesValid = packages |> List.sumBy (fun p -> List.sumBy (fun (c: Class) -> c.Lines.Length) p.Classes)
   let linesCovered = packages |> List.sumBy (fun p -> List.sumBy (fun (c: Class) -> int(c.LineCoverage * float c.Lines.Length)) p.Classes)
   let lineCoverage = (float linesCovered) / (float linesValid)
@@ -221,11 +281,14 @@ let generateXml (packages: Package list) =
     XAttribute("lines-covered", linesCovered),
     XAttribute("lines-valid", linesValid),
     XAttribute("branches-covered", branchesCovered),
-    XAttribute("branches-valid", branchesValid),
-    XElement("sources", XElement("source")))
+    XAttribute("branches-valid", branchesValid))
+  let sourcesElem = XElement "sources"
+  for source in contents.Sources do
+    sourcesElem.Add(serializeSource source)
+  coverageElem.Add sourcesElem
   let packagesElem = XElement "packages"
   for pkg in packages do
-    packagesElem.Add(serializePackage pkg)
+    packagesElem.Add(serializePackage pkg contents.ClassesToSources)
   coverageElem.Add packagesElem
   coverageElem
       
