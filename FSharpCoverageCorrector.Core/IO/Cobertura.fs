@@ -7,9 +7,17 @@ open System.Text.RegularExpressions
 open System.Xml
 open System.Xml.Linq
 open FSharpCoverageCorrector.Core
+open FSharpCoverageCorrector.Core.Utils
 open FSharpLint.Framework.ParseFile
 open FSharpLint.Framework.Rules
 open Microsoft.FSharp.Collections
+
+type ClassParseError =
+  | AmbiguousSourceFiles of {| ClassName: string; SourceFile: string list |}
+  
+  member this.ClassName =
+    match this with
+    | AmbiguousSourceFiles x -> x.ClassName
 
 /// Contents loaded from a Cobertura file
 type CoberturaContents =
@@ -20,7 +28,17 @@ type CoberturaContents =
     Packages: Package list
     /// A lookup table of class names to the source from which they came
     ClassesToSources: Map<string, string>
+    /// A list of class parse errors
+    ClassParseErrors : ClassParseError list
   }
+  
+type internal ParsePackageResult =
+  {
+    Package: Package
+    ClassToSourceLookup: Map<string, string>
+    ClassParseErrors: ClassParseError list
+  }
+
 
 /// Formats a float.
 let inline private formatFloat (flt: float) =
@@ -66,38 +84,44 @@ let private parseConditions (node: XmlNode) (overallConditionCoverage : GenericC
   (jumpConditions @ switchConditions) |> List.sortBy (fun c -> c.Number)
 
 /// parses a line element
-let private parseLine (fileContents: SourceFile) (node: XmlNode) =
+let private parseLine (sourceFileOpt: SourceFile option) (node: XmlNode) =
   let attributes = node.Attributes
   let number = attributes["number"].Value |> Convert.ToInt32
-  if fileContents.Lines.Length < number then
-    failwith $"file {fileContents} expected to have at least $number lines, but only has {fileContents.Lines.Length} lines"
-  let contents = fileContents.Lines[number-1]
-  let conditions = match node.SelectSingleNode("conditions") with
-                   | null -> []
-                   | n -> let ccStr = attributes["condition-coverage"].Value
-                          let split = ccStr.Replace(" ", String.Empty).Replace("(", String.Empty).Replace(")", String.Empty).Split([|'%'; '/'|])
-                          // if the string has no content, set the condition coverage to 0. Otherwise, set it to the parsed values
-                          let lineCC = if String.IsNullOrWhiteSpace contents then // note that the line should not be null
-                                         { NumCovered=0; NumConditions=0 }
-                                        else 
-                                         { NumCovered = Convert.ToInt32 split[1]
-                                           NumConditions = Convert.ToInt32 split[2] }
-                          parseConditions n lineCC
+  let contentsOpt =
+    match sourceFileOpt with
+    | Some sourceFile ->
+      if sourceFile.Lines.Length < number then
+        failwith $"file {sourceFile} expected to have at least $number lines, but only has {sourceFile.Lines.Length} lines"
+      else
+        Some sourceFile.Lines[number-1]
+    | None -> None
+  let conditions =
+    match node.SelectSingleNode("conditions") with
+    | null -> []
+    | n -> let ccStr = attributes["condition-coverage"].Value
+           let split = ccStr.Replace(" ", String.Empty).Replace("(", String.Empty).Replace(")", String.Empty).Split([|'%'; '/'|])
+           // if the string has no content, set the condition coverage to 0. Otherwise, set it to the parsed values
+           let lineCC =
+             match contentsOpt with
+             | Some contents when (not (String.IsNullOrWhiteSpace contents)) ->
+               { NumCovered = Convert.ToInt32 split[1]
+                 NumConditions = Convert.ToInt32 split[2] }
+             | _ -> {NumCovered=0; NumConditions=0}
+           parseConditions n lineCC
   { Number=number
     Hits=attributes["hits"].Value |> Convert.ToInt32
     Conditions = conditions
-    Contents = contents
+    Contents = contentsOpt
   }
 
 /// parses a method element
-let private parseMethod fileContents (node: XmlNode) =
+let private parseMethod (sourceFileOpt: SourceFile option) (node: XmlNode) =
   let attributes = node.Attributes
-  let lines = node.SelectSingleNode("lines").ChildNodes.Cast<XmlNode>()
-              |> Seq.map (parseLine fileContents)
-              |> Seq.toList
   { Name=attributes["name"].Value
     Signature=attributes["signature"].Value
-    Lines=lines
+    Lines = node.SelectSingleNode("lines").ChildNodes.Cast<XmlNode>()
+            |> Seq.map (parseLine sourceFileOpt)
+            |> Seq.toList
   }
   
 /// parses a class element and associates it with the appropriate source file and AST information.
@@ -116,36 +140,53 @@ let private parseClass (sources: string list) (sourceFiles: SourceFile list) (no
                                             |> List.map (fun sf -> sf, src)
                                           )
                              |> List.concat
-  if List.isEmpty sourceFileCandidates then
-    failwith $"unable to find loaded source file corresponding to {classFilename} for class {className}"
-  else if List.length sourceFileCandidates > 1 then
-    failwith $"ambiguous choice for source files from which {classFilename} could originate: {String.Join(';', sourceFileCandidates)}"
-  // else
-  let sourceFile, source = sourceFileCandidates.Head // sourceFileCandidates guaranteed to have a single element at this point
-  let methods = node.SelectSingleNode("methods").ChildNodes.Cast<XmlNode>()
-              |> Seq.map (parseMethod sourceFile)
-              |> Seq.toList
-  let lines = node.SelectSingleNode("lines").ChildNodes.Cast<XmlNode>()
-              |> Seq.map (parseLine sourceFile)
-              |> Seq.toList
-  // return the class and the source
-  let c = Class.Create(attributes["name"].Value, sourceFile, methods, lines)
-  c, source
+  if List.length sourceFileCandidates > 1 then
+    let sourceFiles = sourceFileCandidates |> List.map snd
+    ClassParseError.AmbiguousSourceFiles( {| ClassName = className; SourceFile = sourceFiles |}) |> Error
+  else 
+    let sourceFileOpt, sourceOpt =
+      if List.isEmpty sourceFileCandidates then
+        None, None
+      else
+        let sourceFile, source = sourceFileCandidates.Head // sourceFileCandidates guaranteed to have a single element at this point
+        Some sourceFile, Some source
+    let methods = node.SelectSingleNode("methods").ChildNodes.Cast<XmlNode>()
+                |> Seq.map (parseMethod sourceFileOpt)
+                |> Seq.toList
+    let lines = node.SelectSingleNode("lines").ChildNodes.Cast<XmlNode>()
+                |> Seq.map (parseLine sourceFileOpt)
+                |> Seq.toList
+    // return the class and the source
+    let c =
+      let name = attributes["name"].Value
+      match sourceFileOpt with
+      | Some sf -> Class.Create(name, sf, methods, lines)
+      | None -> Class.Create(name, classFilename, methods, lines)
+    (c, sourceOpt) |> Ok
   
 /// parses a package element and associates it with the appropriate source file and AST information.
 let private parsePackage (sources : string list) (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (node: XmlNode) = 
-  let classesAndSources = node.SelectSingleNode("classes").ChildNodes.Cast<XmlNode>()
-                          |> Seq.map (parseClass sources sourceFiles)
-                          |> Seq.toList
+  let classesAndSources, classParseErrors =
+    node.SelectSingleNode("classes").ChildNodes.Cast<XmlNode>()
+    |> Seq.map (parseClass sources sourceFiles)
+    |> Seq.toList
+    |> unwrapAndPartitionResults
   let classes = classesAndSources |> List.map fst
-  let classFilenames = classes |> List.map (fun c -> c.SourceFile.Filename) |> Set
+  let classFilenames =
+    classes
+    |> List.map (fun c -> c.SourceFile)
+    |> filterSome
+    |> List.map (fun c -> c.Filename)
+    |> Set
   let relevantRuleParams = ruleParams
                            |> Map.filter (fun f _ -> classFilenames.Contains(f.Filename))
   let classToSourceLookup = classesAndSources
-                            |> List.map (fun (c, s) -> c.Name, s)
+                            |> List.filter (fun (_, s) -> s.IsSome)
+                            |> List.map (fun (c, s) -> c.Name, s.Value)
                             |> Map
-  let package = { Name=node.Attributes["name"].Value; Classes=classes; RuleParams = relevantRuleParams }
-  package, classToSourceLookup
+  { Package = { Name=node.Attributes["name"].Value; Classes=classes; RuleParams = relevantRuleParams }
+    ClassToSourceLookup = classToSourceLookup
+    ClassParseErrors = classParseErrors }
 
 /// Reads F# packages from a list of source files.
 /// Returns a list of packages and a map from class names to their sources (sources as loaded from the Cobertura XML, not filenames).
@@ -154,10 +195,12 @@ let private readPackages (sources: string list) (sourceFiles: SourceFile list) (
   // read the packages
   de.SelectSingleNode("packages").ChildNodes.Cast<XmlNode>()
   |> Seq.map (parsePackage sources sourceFiles ruleParams)
-  |> Seq.fold (fun (pkgList, classesToSourcesLookup) (pkg, m) ->
-                pkg::pkgList, mergeMaps classesToSourcesLookup m
+  |> Seq.fold (fun (pkgList, classesToSourcesLookup, classParseErrors) parsePackageResult ->
+                (parsePackageResult.Package::pkgList,
+                mergeMaps classesToSourcesLookup parsePackageResult.ClassToSourceLookup,
+                parsePackageResult.ClassParseErrors @ classParseErrors)
               )
-              (List.empty, Map.empty)
+              (List.empty, Map.empty, List.empty)
   
 /// Reads the sources element from a cobertura XML document.
 let private readSources (doc: XmlDocument) =
@@ -181,11 +224,12 @@ let readCoberturaFileContents (filesInfo: FileParseInfo list) (ruleParams: Map<S
     let doc = XmlDocument()
     doc.Load(filename)
     let sources = readSources doc
-    let packages, classesToSourcesLookup = readPackages sources sourceFiles ruleParams doc
+    let packages, classesToSourcesLookup, classParseErrors = readPackages sources sourceFiles ruleParams doc
     {
       Sources = sources
       Packages = packages
       ClassesToSources = classesToSourcesLookup
+      ClassParseErrors = classParseErrors
     } |> Ok
   with ex -> Error ex
   
@@ -230,7 +274,7 @@ let private serializeMethod (m: Method) =
 /// Serializes a Class to Cobertura Class element.
 let private serializeClass (source: string) (c: Class) =
   let regex = Regex(Regex.Escape(source))
-  let filename = regex.Replace(c.SourceFile.Filename, "", 1)
+  let filename = regex.Replace(c.Filename, "", 1)
   let elem = XElement("class",
     XAttribute("name", c.Name),
     XAttribute("filename", filename),
@@ -257,7 +301,16 @@ let private serializePackage (p: Package) (classesToSources: Map<string, string>
     XAttribute("branch-rate", coverageRatio p.ConditionCoverage |> formatFloat),
     XAttribute("complexity", p.CyclomaticComplexity))
   if p.Classes.Length > 0 then
-    elem.Add(XElement("classes", p.Classes |> List.map (fun c -> serializeClass classesToSources[c.Name] c) |> List.toArray))
+    let classesToAdd =
+      p.Classes
+      |> List.map (fun c ->
+        if classesToSources.ContainsKey c.Name then
+          serializeClass classesToSources[c.Name] c
+        else
+          // todo: validate this case
+          serializeClass "" c)
+      |> List.toArray
+    elem.Add(XElement("classes", classesToAdd))
   elem
 
 /// <summary>

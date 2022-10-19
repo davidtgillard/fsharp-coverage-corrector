@@ -136,7 +136,7 @@ let private hasCases node =
    match node with
    | AstNode.Expression expression ->
      match expression with
-     | (SynExpr.MatchBang _ | SynExpr.MatchLambda _ | SynExpr.Match _ | SynExpr.TryWith _) -> true
+     | SynExpr.MatchBang _ | SynExpr.MatchLambda _ | SynExpr.Match _ | SynExpr.TryWith _ -> true
      | _ -> false
    | _ -> false
 
@@ -198,24 +198,31 @@ let private correctMethod (lookup: Map<int, NodeBranches list>) (method: Method)
   { method with Lines = lines }
   
 /// Given a lookup table of line numbers to NodeBranches, return a new class with the corrected branch coverage
-let private correctClass (lookup: Map<int, NodeBranches list>) (origClass: Class) =
+let private correctClass (lookup: Map<int, NodeBranches list>) (origClass: Class) (sourceFile: SourceFile) =
   let updatedMethods = origClass.Methods
                        |> List.map (correctMethod lookup)
-  Class.Create(origClass.Name, origClass.SourceFile, updatedMethods, origClass.NonMethodLines)
-  
+  Class.Create(origClass.Name, sourceFile, updatedMethods, origClass.NonMethodLines)
+
+// todo: use an error type instead of a list of classes for the errors about uncorrected classes
 /// <summary>
 /// Given a lookup table of line numbers to NodeBranches, correct the branch coverage of the method
 /// </summary>
 /// <param name="package">The package to be corrected.</param>
-/// <returns>The corrected package.</returns>
+/// <returns>The corrected package, and a list of classes which could not be corrected due to missing source file information.</returns>
 let correctBranchCoverage (package: Package) =
   let lineLookup = buildBranchCoverageLineLookup (buildLineLookup package)
-  let updatedClasses = package.Classes
-                       |> List.map (fun c ->
-                                      let perFileLookup = match Map.tryFind c.SourceFile lineLookup with
-                                                          | Some found -> found
-                                                          | None -> failwith $"source file {c.SourceFile} not found within branch coverage line lookup table"
-                                      correctClass perFileLookup c)
-  { package with Classes = updatedClasses }
+  let classesWithSourceFiles, classesWithoutSourceFiles = package.Classes |> List.partition (fun cls -> cls.SourceFile.IsSome)
+  let updatedClasses = classesWithSourceFiles
+                       |> List.map (fun cls ->
+                                        let sourceFile = cls.SourceFile.Value
+                                      // we know the class has a source file at this point
+                                        let perFileLookup = match Map.tryFind sourceFile lineLookup with
+                                                            | Some found -> found
+                                                            | None -> failwith $"source file {cls.SourceFile} not found within branch coverage line lookup table"
+                                        correctClass perFileLookup cls sourceFile)
+  let errors =
+    classesWithoutSourceFiles
+    |> List.map (fun c -> $"No source file {c.Filename} loaded for {c.Name}")
+  { package with Classes = updatedClasses @ classesWithoutSourceFiles }, errors
 
   

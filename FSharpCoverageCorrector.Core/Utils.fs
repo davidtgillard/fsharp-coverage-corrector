@@ -10,6 +10,11 @@ let replace (``replace?``: 't -> 't -> bool) (newItem: 't) (l: 't list)  =
                                    else
                                      elem)
   
+let filterSome (options: Option<'a> list) =
+  options
+  |> List.filter (fun o -> o.IsSome)
+  |> List.map (fun o -> o.Value)
+  
 /// Given a list of results, filters the oks and unwraps them
 let unwrapOks (results : Result<'o, 'e> list) =
   results |> List.filter (fun r -> match r with
