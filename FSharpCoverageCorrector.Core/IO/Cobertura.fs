@@ -26,8 +26,6 @@ type CoberturaContents =
     Sources: string list
     /// The packages read from a cobertura file
     Packages: Package list
-    /// A lookup table of class names to the source from which they came
-    ClassesToSources: Map<string, string>
     /// A list of class parse errors
     ClassParseErrors : ClassParseError list
   }
@@ -35,7 +33,6 @@ type CoberturaContents =
 type internal ParsePackageResult =
   {
     Package: Package
-    ClassToSourceLookup: Map<string, string>
     ClassParseErrors: ClassParseError list
   }
 
@@ -144,12 +141,16 @@ let private parseClass (sources: string list) (sourceFiles: SourceFile list) (no
     let sourceFiles = sourceFileCandidates |> List.map snd
     ClassParseError.AmbiguousSourceFiles( {| ClassName = className; SourceFile = sourceFiles |}) |> Error
   else 
-    let sourceFileOpt, sourceOpt =
+    let sourceFileAndRootOpt =
       if List.isEmpty sourceFileCandidates then
-        None, None
+        None
       else
         let sourceFile, source = sourceFileCandidates.Head // sourceFileCandidates guaranteed to have a single element at this point
-        Some sourceFile, Some source
+        Some (sourceFile, source)
+    let sourceFileOpt =
+      match sourceFileAndRootOpt with
+      | Some (sourceFile, _) -> Some sourceFile
+      | None -> None
     let methods = node.SelectSingleNode("methods").ChildNodes.Cast<XmlNode>()
                 |> Seq.map (parseMethod sourceFileOpt)
                 |> Seq.toList
@@ -159,19 +160,18 @@ let private parseClass (sources: string list) (sourceFiles: SourceFile list) (no
     // return the class and the source
     let c =
       let name = attributes["name"].Value
-      match sourceFileOpt with
-      | Some sf -> Class.Create(name, sf, methods, lines)
+      match sourceFileAndRootOpt with
+      | Some (sf, root) -> Class.Create(name, sf, root, methods, lines)
       | None -> Class.Create(name, classFilename, methods, lines)
-    (c, sourceOpt) |> Ok
+    Ok c
   
 /// parses a package element and associates it with the appropriate source file and AST information.
 let private parsePackage (sources : string list) (sourceFiles: SourceFile list) (ruleParams: Map<SourceFile, AstNodeRuleParams list>) (node: XmlNode) = 
-  let classesAndSources, classParseErrors =
+  let classes, classParseErrors =
     node.SelectSingleNode("classes").ChildNodes.Cast<XmlNode>()
     |> Seq.map (parseClass sources sourceFiles)
     |> Seq.toList
     |> unwrapAndPartitionResults
-  let classes = classesAndSources |> List.map fst
   let classFilenames =
     classes
     |> List.map (fun c -> c.SourceFile)
@@ -180,12 +180,7 @@ let private parsePackage (sources : string list) (sourceFiles: SourceFile list) 
     |> Set
   let relevantRuleParams = ruleParams
                            |> Map.filter (fun f _ -> classFilenames.Contains(f.Filename))
-  let classToSourceLookup = classesAndSources
-                            |> List.filter (fun (_, s) -> s.IsSome)
-                            |> List.map (fun (c, s) -> c.Name, s.Value)
-                            |> Map
   { Package = { Name=node.Attributes["name"].Value; Classes=classes; RuleParams = relevantRuleParams }
-    ClassToSourceLookup = classToSourceLookup
     ClassParseErrors = classParseErrors }
 
 /// Reads F# packages from a list of source files.
@@ -195,12 +190,11 @@ let private readPackages (sources: string list) (sourceFiles: SourceFile list) (
   // read the packages
   de.SelectSingleNode("packages").ChildNodes.Cast<XmlNode>()
   |> Seq.map (parsePackage sources sourceFiles ruleParams)
-  |> Seq.fold (fun (pkgList, classesToSourcesLookup, classParseErrors) parsePackageResult ->
+  |> Seq.fold (fun (pkgList, classParseErrors) parsePackageResult ->
                 (parsePackageResult.Package::pkgList,
-                mergeMaps classesToSourcesLookup parsePackageResult.ClassToSourceLookup,
                 parsePackageResult.ClassParseErrors @ classParseErrors)
               )
-              (List.empty, Map.empty, List.empty)
+              (List.empty, List.empty)
   
 /// Reads the sources element from a cobertura XML document.
 let private readSources (doc: XmlDocument) =
@@ -224,11 +218,10 @@ let readCoberturaFileContents (filesInfo: FileParseInfo list) (ruleParams: Map<S
     let doc = XmlDocument()
     doc.Load(filename)
     let sources = readSources doc
-    let packages, classesToSourcesLookup, classParseErrors = readPackages sources sourceFiles ruleParams doc
+    let packages, classParseErrors = readPackages sources sourceFiles ruleParams doc
     {
       Sources = sources
       Packages = packages
-      ClassesToSources = classesToSourcesLookup
       ClassParseErrors = classParseErrors
     } |> Ok
   with ex -> Error ex
@@ -272,8 +265,12 @@ let private serializeMethod (m: Method) =
   elem
 
 /// Serializes a Class to Cobertura Class element.
-let private serializeClass (source: string) (c: Class) =
-  let regex = Regex(Regex.Escape(source))
+let private serializeClass (c: Class) =
+  let sourceRoot =
+    match c.SourceRoot with
+    | Some sr -> sr
+    | None -> ""
+  let regex = Regex(Regex.Escape(sourceRoot))
   let filename = regex.Replace(c.Filename, "", 1)
   let elem = XElement("class",
     XAttribute("name", c.Name),
@@ -294,7 +291,7 @@ let private serializeSource (source: string) =
   elem
     
 /// Serializes a Package to Cobertura Package element.
-let private serializePackage (p: Package) (classesToSources: Map<string, string>) =
+let private serializePackage (p: Package) =
   let elem = XElement("package",
     XAttribute("name", p.Name),
     XAttribute("line-rate", p.LineCoverage |> formatFloat),
@@ -303,12 +300,7 @@ let private serializePackage (p: Package) (classesToSources: Map<string, string>
   if p.Classes.Length > 0 then
     let classesToAdd =
       p.Classes
-      |> List.map (fun c ->
-        if classesToSources.ContainsKey c.Name then
-          serializeClass classesToSources[c.Name] c
-        else
-          // todo: validate this case
-          serializeClass "" c)
+      |> List.map serializeClass
       |> List.toArray
     elem.Add(XElement("classes", classesToAdd))
   elem
@@ -337,11 +329,11 @@ let generateXml (contents: CoberturaContents) =
     XAttribute("branches-valid", branchesValid))
   let sourcesElem = XElement "sources"
   for source in contents.Sources do
-    sourcesElem.Add(serializeSource source)
+    sourcesElem.Add (serializeSource source)
   coverageElem.Add sourcesElem
   let packagesElem = XElement "packages"
   for pkg in packages do
-    packagesElem.Add(serializePackage pkg contents.ClassesToSources)
+    packagesElem.Add (serializePackage pkg)
   coverageElem.Add packagesElem
   coverageElem
       

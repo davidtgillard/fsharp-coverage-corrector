@@ -9,6 +9,7 @@ open FSharp.Compiler.Syntax
 open FSharpLint.Framework.Ast
 open FSharpLint.Framework.Rules
 open FSharpCoverageCorrector.Core
+open FSharpCoverageCorrector.Core.Utils
   
 /// The scope of a binding. 
 type private BindingScope =
@@ -198,10 +199,10 @@ let private correctMethod (lookup: Map<int, NodeBranches list>) (method: Method)
   { method with Lines = lines }
   
 /// Given a lookup table of line numbers to NodeBranches, return a new class with the corrected branch coverage
-let private correctClass (lookup: Map<int, NodeBranches list>) (origClass: Class) (sourceFile: SourceFile) =
+let private correctClass (lookup: Map<int, NodeBranches list>) (origClass: Class) (sourceFile: SourceFile) (sourceRoot: string) =
   let updatedMethods = origClass.Methods
                        |> List.map (correctMethod lookup)
-  Class.Create(origClass.Name, sourceFile, updatedMethods, origClass.NonMethodLines)
+  Class.Create(origClass.Name, sourceFile, sourceRoot, updatedMethods, origClass.NonMethodLines)
 
 // todo: use an error type instead of a list of classes for the errors about uncorrected classes
 /// <summary>
@@ -211,18 +212,27 @@ let private correctClass (lookup: Map<int, NodeBranches list>) (origClass: Class
 /// <returns>The corrected package, and a list of classes which could not be corrected due to missing source file information.</returns>
 let correctBranchCoverage (package: Package) =
   let lineLookup = buildBranchCoverageLineLookup (buildLineLookup package)
-  let classesWithSourceFiles, classesWithoutSourceFiles = package.Classes |> List.partition (fun cls -> cls.SourceFile.IsSome)
-  let updatedClasses = classesWithSourceFiles
-                       |> List.map (fun cls ->
-                                        let sourceFile = cls.SourceFile.Value
-                                      // we know the class has a source file at this point
-                                        let perFileLookup = match Map.tryFind sourceFile lineLookup with
-                                                            | Some found -> found
-                                                            | None -> failwith $"source file {cls.SourceFile} not found within branch coverage line lookup table"
-                                        correctClass perFileLookup cls sourceFile)
+  // partition classes on the basis of whether they have a loaded source file contents
+  let classesWithSourceInfoContents, classesWithoutSourceInfoContents =
+    package.Classes
+    |> partitionMap
+      (fun c -> match c.SourceInfo with | Contents _ -> true | _ -> false) 
+      (fun c -> match c.SourceInfo with
+                | Contents (sourceFile, sourceRoot) -> (c, sourceFile, sourceRoot) // map classes with lodaed source file contents to (c, sourceFile, sourceRoot)
+                | _ -> raise (InvalidOperationException""))
+      id
+  // attempt to correct those classes that have source content available
+  let correctedClasses =
+    classesWithSourceInfoContents
+    |> List.map (fun (c, sourceFile, sourceRoot) ->
+                   let perFileLookup = match Map.tryFind sourceFile lineLookup with
+                                       | Some found -> found
+                                       | None -> failwith $"source file {sourceFile.Filename} not found within branch coverage line lookup table"
+                   correctClass perFileLookup c sourceFile sourceRoot
+                 )
   let errors =
-    classesWithoutSourceFiles
+    classesWithoutSourceInfoContents
     |> List.map (fun c -> $"No source file {c.Filename} loaded for {c.Name}")
-  { package with Classes = updatedClasses @ classesWithoutSourceFiles }, errors
+  { package with Classes = correctedClasses @ classesWithoutSourceInfoContents }, errors
 
   
