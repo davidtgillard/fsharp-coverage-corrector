@@ -16,7 +16,7 @@ dotnet tool install --global fsharp-coverage-corrector.console --version 0.1.1-a
 
 To run the tool, the command must be provided with: 
 1. The path to an input coverage file in cobertura format, specified with `--coverage-file`.
-2. The path to the .fsproj file specified with `--project-file`, which provides the referenced source code against which corrections will be made.
+2. The path to the .fsproj file specified with `--project-file`, which provides the referenced source code against which corrections will be made. Multiple `--project-file` options may be included.
 3. A path for an output file, to be created. 
 
 Example of usage:

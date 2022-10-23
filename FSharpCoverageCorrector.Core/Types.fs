@@ -134,8 +134,8 @@ type Line =
     Hits: int
     /// The conditions of the line.
     Conditions: LineCondition list
-    /// The contents of the line.
-    Contents: string
+    /// The contents of the line, if available.
+    Contents: string option
   }
   
   /// The condition coverage of the line.
@@ -174,13 +174,26 @@ type Method =
   /// The cyclomatic complexity of the method.
   member this.CyclomaticComplexity =
     (this.Lines |> List.sumBy (fun l -> l.Conditions.Length)) + 1
+
+/// Contains the source information for a class.
+type ClassSourceInfo =
+    /// Contains source file contains, as well as the 'SourceRoot' path to which the source belongs ('SourceRoot' corresponds to the Sources/Source element in Cobertura file format).
+  | Contents of SourceFile * SourceRoot: string
+  /// No contents loaded, juts filename.
+  | NoContents of Filename: string
+  
+  /// The filename of the class.
+  member this.Filename =
+    match this with
+    | Contents (sf, _) -> sf.Filename
+    | NoContents filename -> filename
   
 /// lines of source code and metadata for a class.
 type Class = private {
     /// The name of the class.
     name_ : string
-    /// The source file of the class.
-    sourceFile_: SourceFile
+    /// The source file of the class, if available.
+    sourceInfo_: ClassSourceInfo
     /// The methods of the class.
     methods_: Method list
     /// All lines of code within the class, including those belong to methods
@@ -189,10 +202,22 @@ type Class = private {
     nonMethodLines_: Line list
   } with
 
+  /// The name of the file.
+  member this.Filename = this.sourceInfo_.Filename
   /// The name of the class.
   member this.Name = this.name_
+  /// The source file and source root.
+  member this.SourceInfo = this.sourceInfo_
   /// The source file of the class.
-  member this.SourceFile = this.sourceFile_
+  member this.SourceFile =
+    match this.sourceInfo_ with
+    | Contents (sourceFile, _) -> Some sourceFile
+    | NoContents _ -> None
+  /// The root path (directory) to which this class source file belongs.
+  member this.SourceRoot =
+    match this.sourceInfo_ with
+    | Contents (_, sourceRoot) -> Some sourceRoot
+    | NoContents _ -> None
   /// The methods of the class.
   member this.Methods = this.methods_
   /// All lines of code within the class, including those belong to methods.
@@ -207,17 +232,44 @@ type Class = private {
   /// will take precedence.
   /// </remarks>
   /// <param name="name">The name of the class.</param>
-  /// <param name="sourceFile">The name of the source file.</param>
+  /// <param name="sourceFile">The source file.</param>
+  /// <param name="sourceRoot">The source root (source directory path of which the source file is within, perhaps nested).</param>
   /// <param name="methods">The methods of the class.</param>
   /// <param name="nonMethodLines">The non-method lines of the class.</param>
-  static member Create(name, sourceFile, methods, nonMethodLines) =
+  static member Create(name, sourceFile, sourceRoot, methods, nonMethodLines) =
+    let methodLines = methods
+                      |> List.map (fun m -> m.Lines)
+                      |> List.concat |> List.distinct
+    let reduced = nonMethodLines
+                  |> List.filter (fun l -> not (List.contains l methodLines))
+    // todo: validate that sourceFile is within sourceRoot (perhaps nested)
+    let allLines = methodLines @ reduced |> List.sortBy (fun l -> l.Number)
+    { name_ = name
+      sourceInfo_ = ClassSourceInfo.Contents (sourceFile, sourceRoot)
+      methods_ = methods
+      lines_ = allLines
+      nonMethodLines_ = reduced }
+    
+  /// <summary>
+  /// Creates a class.
+  /// </summary>
+  /// <remarks>
+  /// <c>nonMethodLines</c> will be compared against the lines of <c>methods</c> with lines belonging to methods removed.
+  /// Where there is overlap in lines provided in <c>methods</c> and <c>nonMethodLines</c>, lines provided in <c>methods</c>
+  /// will take precedence.
+  /// </remarks>
+  /// <param name="name">The name of the class.</param>
+  /// <param name="filename">The filename of the source file to which the class belongs.</param>
+  /// <param name="methods">The methods of the class.</param>
+  /// <param name="nonMethodLines">The non-method lines of the class.</param>
+  static member Create(name, filename, methods, nonMethodLines) =
     let methodLines = methods
                       |> List.map (fun m -> m.Lines)
                       |> List.concat |> List.distinct
     let reduced = nonMethodLines
                   |> List.filter (fun l -> not (List.contains l methodLines))
     let allLines = methodLines @ reduced |> List.sortBy (fun l -> l.Number)
-    {name_ = name; sourceFile_ = sourceFile; methods_ = methods; lines_ = allLines; nonMethodLines_ = reduced}
+    {name_ = name; sourceInfo_ = ClassSourceInfo.NoContents filename; methods_ = methods; lines_ = allLines; nonMethodLines_ = reduced}
   
   /// The lines of code within the class that don't belong to any methods.
   member this.NonMethodLines = this.nonMethodLines_
