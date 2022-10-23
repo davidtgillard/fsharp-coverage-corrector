@@ -1,7 +1,7 @@
 <!-- Contains properties common to all NuGet packages-->
 <Project>
     <PropertyGroup>
-        <Version>0.1.3-alpha</Version>
+        <Version>0.1.2-alpha</Version>
         <PackageReleaseNotes>First release.</PackageReleaseNotes>
         <Authors>davidtgillard</Authors>
         <PackageProjectUrl>https://github.com/davidtgillard/fsharp-coverage-corrector</PackageProjectUrl>
