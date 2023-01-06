@@ -16,6 +16,14 @@ type BiggerDU =
   | D
   | E
   | F
+  
+type MyStruct =
+  {
+    IntVal: int
+    StringVal: string
+  }
+  
+  member this.AMethod = $"IntVal = {this.IntVal}, StringVal = {this.StringVal}" 
 
 type MyClass(value: int) =
   let mutable value_ = value
@@ -86,6 +94,7 @@ let runTask(y: MyDU) =
     | One _ -> ()
     | Two _ -> ()
     | _ -> ()
+
     let t = 1
     if t = 1 then
       Console.WriteLine("Hi")
@@ -96,6 +105,13 @@ let runTask(y: MyDU) =
     else
       Console.WriteLine("Nope")
     return 2
+  }
+  
+let doBang (cond: bool) =
+  task {
+    do! match cond with
+        | true -> Task.Delay(1) |> Async.AwaitTask
+        | false -> Task.Delay(2) |> Async.AwaitTask
   }
  
 let mySeq() =
